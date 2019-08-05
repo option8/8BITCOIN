@@ -64,7 +64,8 @@
 *	unrolled COPYCHUNK1													714,904
 *	replaced prbyte with my own:										708,036
 *	special temp/s0 macros:												662,220
-*	LDAW, LDWADDX, LDS, inline JSRs										627,718
+*	LDAW, LDWADDX, LDS, inline JSRs										627,428
+
 
 **************************************************
 * Variables
@@ -285,9 +286,10 @@ EXTEND			PLA									; pull A from stack (15)
 EXTEND2			PHA									; push new A to stack = 16
 				SEC									; set carry for subtract
 				SBC	#$0F							; -15
-				CLC
+
+				ASL
 				ROL
-				ROL
+
 				TAX									; X now = X*4
 
 				LDAW								; takes X as arg. load W[a-15] into INPUT32
@@ -328,8 +330,7 @@ RIGHTSHIFT3		LUP	3
 				SEC									; set carry for subtract
 				SBC	#$02							; -02
 
-				CLC
-				ROL
+				ASL
 				ROL
 				TAX									; X = X*4 again
 
@@ -890,9 +891,7 @@ LDAW		MAC									; X indicates which W0x word to read from
 
 LDWSTA32	MAC									; store INPUT32 in W0x word
 
-			CLC
-
-			ROL
+			ASL
 			ROL
 			TAX									;x=A*4
 
@@ -1212,9 +1211,9 @@ ADC32	MAC	; Adds INPUT32 and XREGISTER32 with carry, if any, clobbers A,Y
 
 
 LDKADC32	MAC								; puts 4 bytes from K0n into 32 bit "accumulator" INPUT32, clobbers A,Y
-			CLC
+			ASL
 			ROL
-			ROL
+			
 			TAX								;x=x*4
 
 			LDA K00 + 3,X					; load from table pointer
@@ -1262,9 +1261,8 @@ LDVHADC32	MAC								; puts 4 bytes from K0n into 32 bit "accumulator" INPUT32, 
 
 LDWADC	MAC								; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
 
-			CLC
 			TXA
-			ROL
+			ASL
 			ROL
 			TAX								; x=x*4
 
@@ -1290,9 +1288,8 @@ LDWADC	MAC								; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clo
 
 LDWADDX	MAC								; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
 
-			CLC
 			TXA
-			ROL
+			ASL
 			ROL
 			TAX								; x=x*4
 
