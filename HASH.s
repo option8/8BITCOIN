@@ -66,6 +66,8 @@
 *	special temp/s0 macros:												662,220
 *	LDAW, LDWADDX, LDS, inline JSRs										627,428
 
+*	caching the result of chunk0 on pass0:								418,144
+
 
 **************************************************
 * Variables
@@ -88,33 +90,33 @@ S1					EQU	$84
 TEMP0				EQU	$88				; temp storage for various operations
 TEMP1				EQU	$8C				; temp storage for various operations
 
-
+HASHCACHED			EQU	$D0				; is the first pass already done, and the result cached in CACHEDHASH?
 
 **************************************************
 * Apple Standard Memory Locations
 **************************************************
-CLRLORES     EQU   $F832
-LORES        EQU   $C050
-TXTSET       EQU   $C051
-MIXCLR       EQU   $C052
-MIXSET       EQU   $C053
-TXTPAGE1     EQU   $C054
-TXTPAGE2     EQU   $C055
-KEY          EQU   $C000
-C80STOREOFF  EQU   $C000
-C80STOREON   EQU   $C001
-STROBE       EQU   $C010
-SPEAKER      EQU   $C030
-VBL          EQU   $C02E
-RDVBLBAR     EQU   $C019		; not VBL (VBL signal low
-WAIT		 EQU   $FCA8 
-RAMWRTAUX    EQU   $C005
-RAMWRTMAIN   EQU   $C004
-SETAN3       EQU   $C05E		; Set annunciator-3 output to 0
-SET80VID     EQU   $C00D		; enable 80-column display mode (WR-only)
-HOME 		 EQU   $FC58		; clear the text screen
-VTAB         EQU   $FC22		; Sets the cursor vertical position (from CV)
-COUT         EQU   $FDED		; Calls the output routine whose address is stored in CSW,
+CLRLORES	EQU	$F832
+LORES		EQU	$C050
+TXTSET		EQU	$C051
+MIXCLR		EQU	$C052
+MIXSET		EQU	$C053
+TXTPAGE1	EQU	$C054
+TXTPAGE2	EQU	$C055
+KEY			EQU	$C000
+C80STOREOFF	EQU	$C000
+C80STOREON	EQU	$C001
+STROBE		EQU	$C010
+SPEAKER		EQU	$C030
+VBL			EQU	$C02E
+RDVBLBAR	EQU	$C019		; not VBL (VBL signal low
+WAIT		EQU	$FCA8 
+RAMWRTAUX	EQU	$C005
+RAMWRTMAIN	EQU	$C004
+SETAN3		EQU	$C05E		; Set annunciator-3 output to 0
+SET80VID	EQU	$C00D		; enable 80-column display mode (WR-only)
+HOME		EQU	$FC58		; clear the text screen
+VTAB		EQU	$FC22		; Sets the cursor vertical position (from CV)
+COUT		EQU	$FDED		; Calls the output routine whose address is stored in CSW,
 ;COUTI		EQU	$fbf0								;  normally COUTI
 CROUT		EQU	$FD8E 			; prints CR
 
@@ -125,21 +127,21 @@ ALTTEXT		EQU	$C055
 ALTTEXTOFF	EQU	$C054
 
 
-PB0			EQU		$C061		; paddle 0 button. high bit set when pressed.
-PDL0		EQU		$C064		; paddle 0 value, or should I use PREAD?
-PREAD		EQU		$FB1E
+PB0			EQU	$C061		; paddle 0 button. high bit set when pressed.
+PDL0		EQU	$C064		; paddle 0 value, or should I use PREAD?
+PREAD		EQU	$FB1E
 
-ROMINIT      EQU    $FB2F
-ROMSETKBD    EQU    $FE89
-ROMSETVID    EQU    $FE93
+ROMINIT  	EQU	$FB2F
+ROMSETKBD	EQU	$FE89
+ROMSETVID	EQU	$FE93
 
-ALTCHAR		EQU		$C00F		; enables alternative character set - mousetext
+ALTCHAR		EQU	$C00F		; enables alternative character set - mousetext
 
-CH				EQU		$24			; cursor Horiz
-CV				EQU		$25			; cursor Vert
+CH			EQU	$24			; cursor Horiz
+CV			EQU	$25			; cursor Vert
 
-WNDWDTH			EQU		$21			; Width of text window
-WNDTOP			EQU		$22			; Top of text window
+WNDWDTH		EQU	$21			; Width of text window
+WNDTOP		EQU	$22			; Top of text window
 
 **************************************************
 * START - sets up various fiddly zero page bits
@@ -149,13 +151,16 @@ WNDTOP			EQU		$22			; Top of text window
 
 				JSR HOME						; clear screen
 
-				STA	$C050   		; rw:TXTCLR	; Set Lo-res page 1, mixed graphics + text
-				STA	$C053   		; rw:MIXSET
-				STA	$C054   		; rw:TXTPAGE1
-				STA	$C056   		; rw:LORES
+				STA	$C050   					; rw:TXTCLR	; Set Lo-res page 1, mixed graphics + text
+				STA	$C053   					; rw:MIXSET
+				STA	$C054   					; rw:TXTPAGE1
+				STA	$C056   					; rw:LORES
 
 				JSR FILLSCREENFAST				; blanks screen to black.
 				JSR SPLASHSCREEN				; fancy lo-res graphics
+
+				LDA #$00
+				STA HASHCACHED					; clear cache status
 
 				JSR FLIPCOIN
 
@@ -193,6 +198,7 @@ WNDTOP			EQU		$22			; Top of text window
 *	break message into 512-bit chunks
 
 *	80byte header yields 1024bit message, so chunks = 2
+*	Cache result of first chunk, so subsequent passes are cache then hash.
 
 PREPROCESS
 				LDA #$00
@@ -222,7 +228,36 @@ INITIALHASHES
 
 *	    copy chunk into first 16 words w[0..15] of the message schedule array
 
-COPYCHUNKS		LDA CURRENTCHUNK				; which chunk?
+COPYCHUNKS
+
+CHECKCACHE
+
+; if HASHCACHED == 1
+; AND chunk=0 AND pass=0
+; then read from CACHEDHASH
+
+				CLC
+				LDA HASHCACHED					; has chunk0 pass0 already done?
+				BNE CACHEDONE
+				JMP NOCACHE
+				
+CACHEDONE		LDA HASHPASS					; pass = 0
+				ADC CURRENTCHUNK				; chunk = 0
+				BEQ CACHETOHASH
+				JMP NOCACHE
+
+CACHETOHASH
+]cachebyte = 0
+				LUP 32
+				LDA CACHEDHASH + ]cachebyte
+				STA H00 + ]cachebyte
+]cachebyte = ]cachebyte+1
+				--^				
+				JMP CHECKCHUNK
+NOCACHE
+
+
+				LDA CURRENTCHUNK				; which chunk?
 				BNE NEXTCHUNK					; skip chunk0 if already done
 				
 				LDA CURRENTMESSAGELO
@@ -262,7 +297,6 @@ COPYCHUNK1		LDA MESSAGE + ]chunkbyte
 				--^
 
 **** Only does this (second chunk) on first pass.
-
 
 
 *	    Extend the first 16 words into the remaining 48 words w[16..63] of the message schedule array:
@@ -423,6 +457,8 @@ HTOV		LDA H00 + ]bytenumber
 **************************************************
 *	MAIN LOOP. OPTIMIZE THIS.
 **************************************************
+
+
 
 COMPRESSION
 
@@ -603,7 +639,7 @@ COMPRESSLOOP	PLA							; Round 0-63 from stack
 				CLC
 				ADC #$01
 				CMP #$40
-				BEQ ADDHASH
+				BEQ ADDHASH				; checks to see if we can skip or pull from cache
 
 				JMP COMPRESS
 **************************************************
@@ -612,12 +648,12 @@ COMPRESSLOOP	PLA							; Round 0-63 from stack
 *	FINALIZE HASH AND OUTPUT.
 **************************************************
 
+
+
+
 ADDHASH
 	
 *	    Add the compressed chunk to the current hash value:
-
-				
-
 *	    h0 := h0 + Va
 *	    h1 := h1 + Vb
 *	    h2 := h2 + Vc
@@ -650,10 +686,32 @@ ADDHASH
 				--^
 				
 
+; if HASHCACHED == 0
+; AND chunk=0 AND pass=0
+; then write to CACHEDHASH
+
+				CLC
+				LDA HASHCACHED					; has chunk0 pass0 already done?
+				ADC HASHPASS
+				ADC CURRENTCHUNK
+				BEQ HASHTOCACHE 				; otherwise
+				JMP CHECKCHUNK					; jump over and check which chunk we're doing
+
+HASHTOCACHE
+]cachebyte = 0
+				LUP 32
+				LDA H00 + ]cachebyte
+				STA CACHEDHASH + ]cachebyte
+]cachebyte = ]cachebyte+1
+				--^				
+
+				LDA #$01
+				STA HASHCACHED					; don't repeat.
+
 
 
 CHECKCHUNK		LDA CURRENTCHUNK
-				BNE CHECKPASS					; did I just do chunk 0? INC and go back and do it again
+				BNE CHECKPASS					; did I just do chunk 0? INC and go back and do second chunk.
 				INC CURRENTCHUNK				; set to chunk 1				
 				JMP COPYCHUNKS					; 
 
@@ -663,7 +721,7 @@ CHECKPASS		LDA HASHPASS					; pass 0? set the message to the hash output and go 
 				
 				JMP DIGEST
 				
-INCHASHPASS		INC HASHPASS
+INCHASHPASS		INC HASHPASS					; 
 
 HASHTOMESSAGE
 				
@@ -818,22 +876,22 @@ LDVLDA		MAC
 			LDA VA + ]1 + ]1 + ]1 + ]1 +1		; load from table pointer
 			STA INPUT32+1						; store in 32 bit "accumulator"
 	
-			LDA VA + ]1 + ]1 + ]1 + ]1		; load from table pointer
-			STA INPUT32						; store in 32 bit "accumulator"
+			LDA VA + ]1 + ]1 + ]1 + ]1			; load from table pointer
+			STA INPUT32							; store in 32 bit "accumulator"
 
             <<<            ; End of Macro
 
 LDVLDX		MAC
 			LDA VA + ]1 + ]1 + ]1 + ]1 +3		; load from table pointer
-			STA XREGISTER32+3						; store in 32 bit "accumulator"
+			STA XREGISTER32+3					; store in 32 bit "accumulator"
 	
 			LDA VA + ]1 + ]1 + ]1 + ]1 +2		; load from table pointer
-			STA XREGISTER32+2						; store in 32 bit "accumulator"
+			STA XREGISTER32+2					; store in 32 bit "accumulator"
 	
 			LDA VA + ]1 + ]1 + ]1 + ]1 +1		; load from table pointer
-			STA XREGISTER32+1						; store in 32 bit "accumulator"
+			STA XREGISTER32+1					; store in 32 bit "accumulator"
 	
-			LDA VA + ]1 + ]1 + ]1 + ]1		; load from table pointer
+			LDA VA + ]1 + ]1 + ]1 + ]1			; load from table pointer
 			STA XREGISTER32						; store in 32 bit "accumulator"
 
             <<<            ; End of Macro
@@ -1955,6 +2013,8 @@ WTABLEHI		DB	>W00,>W01,>W02,>W03,>W04,>W05,>W06,>W07,>W08,>W09
 
 ;	Initialize hash values:
 ;	(first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
+
+CACHEDHASH		DS 32					; storage for the first chunk of first pass. Won't change between nonce changes.
 
 INITIALHASH		HEX	6a,09,e6,67			; need to keep this on hand to reset after hash pass 1.
 				HEX	bb,67,ae,85
