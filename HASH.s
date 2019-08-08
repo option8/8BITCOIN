@@ -66,7 +66,8 @@
 *	special temp/s0 macros:												662,220
 *	LDAW, LDWADDX, LDS, inline JSRs										627,428
 
-*	caching the result of chunk0 on pass0:								418,144
+*	caching the result of chunk0 on pass0:								419,137
+*	QKUMBA SAYS "IT'S A BIT FASTER"											269,329
 
 
 **************************************************
@@ -164,12 +165,6 @@ WNDTOP		EQU	$22			; Top of text window
 
 				JSR FLIPCOIN
 
-				; set text window to last 4 lines of GR screen.
-				LDA #$14
-				STA CV
-				STA	WNDTOP
-				JSR VTAB
-
 **************************************************
 *	SETUP
 **************************************************
@@ -230,21 +225,21 @@ INITIALHASHES
 
 COPYCHUNKS
 
+
 CHECKCACHE
 
 ; if HASHCACHED == 1
 ; AND chunk=0 AND pass=0
 ; then read from CACHEDHASH
 
-				CLC
 				LDA HASHCACHED					; has chunk0 pass0 already done?
-				BNE CACHEDONE
-				JMP NOCACHE
+				BEQ NOTCACHED
 				
 CACHEDONE		LDA HASHPASS					; pass = 0
-				ADC CURRENTCHUNK				; chunk = 0
+				ORA CURRENTCHUNK				; chunk = 0
 				BEQ CACHETOHASH
-				JMP NOCACHE
+
+NOTCACHED			JMP NOCACHE
 
 CACHETOHASH
 ]cachebyte = 0
@@ -260,32 +255,21 @@ NOCACHE
 				LDA CURRENTCHUNK				; which chunk?
 				BNE NEXTCHUNK					; skip chunk0 if already done
 				
-				LDA CURRENTMESSAGELO
-				STA $00							; ***** UNROLL for speedup? how, with indirect address (),Y?
-				LDA CURRENTMESSAGEHI
-				STA $01
-
 				LDY #$3F						; Y = 63 to 0 on chunk 0, then 64 to 127 on chunk 1
-COPYCHUNK0		LDA ($0),Y
+COPYCHUNK0		LDA (CURRENTMESSAGELO),Y
 				STA W00,Y
 				DEY
 				BPL	COPYCHUNK0					; if hasn't rolled over to FF, loop to copy next byte.
 
 ***** if I'm on second pass, only do chunk0
 ; HASHPASS = 1, add to CURRENTCHUNK?
-				CLC				
-				LDA CURRENTCHUNK
-				ADC HASHPASS
+				LDA HASHPASS
 				STA CURRENTCHUNK
 ***** if I'm on second pass, only do chunk0
 				
 				JMP EXTENDWORDS					; done with chunk 0
 
 NEXTCHUNK		
-				LDA CURRENTMESSAGELO
-				STA $00							
-				LDA CURRENTMESSAGEHI
-				STA $01
 
 
 **** Only does this (second chunk) on first pass. So CURRENTMESSAGE always points to MESSAGE (never MESSAGE2)
@@ -299,6 +283,14 @@ COPYCHUNK1		LDA MESSAGE + ]chunkbyte
 **** Only does this (second chunk) on first pass.
 
 
+
+
+
+
+
+
+
+
 *	    Extend the first 16 words into the remaining 48 words w[16..63] of the message schedule array:
 
 *	    for i from 16 to 63
@@ -306,131 +298,102 @@ COPYCHUNK1		LDA MESSAGE + ]chunkbyte
 *			s0 = (XREGISTER32) xor (YREGISTER32) xor (INPUT32)
 
 EXTENDWORDS
-				LDA #$0F							; 15
-				PHA									; push to stack = 15
+				LDX #60								; 15*4
 
-EXTEND			PLA									; pull A from stack (15)
-				CLC									; clear carry
-				ADC #$01							; increment accumulator = 16
-				CMP #$40							; compare to 64
+EXTEND				TXA
+				CLC
+				ADC #$04							; increment A = 16
+				;;CMP #$40							; compare to 64*4
 
 				BNE	EXTEND2							; done with EXTEND step (done through 63)
 				JMP INITIALIZE
 				
-EXTEND2			PHA									; push new A to stack = 16
-				SEC									; set carry for subtract
-				SBC	#$0F							; -15
+EXTEND2			TAX
+				;;SEC									; set carry for subtract
+				;;SBC	#$0F							; -15
 
-				ASL
-				ROL
-
-				TAX									; X now = X*4
-
-				LDAW								; takes X as arg. load W[a-15] into INPUT32
-
-
-RIGHTROTATE7	LUP	7
-				RIGHTROTATE32						; ROR32 7 times
+				LDXWR15								; takes X as arg. load W[a-15] into XREGISTER32 and ROR32
+	
+RIGHTROTATEX7	LUP	6
+				RIGHTROTATEX32						; ROR32 6 more times
 				--^
 
-				TAX32								; should store partial result at XREGISTER32
+				STA XREGISTER32		
+				;;TAX32								; should store partial result at XREGISTER32
 				
-RIGHTROTATE18	RIGHTROTATE8
-				LUP 3
-				RIGHTROTATE32						; ROR32 11 more times
+RIGHTROTATE18	RIGHTROTATEXY8									; copy from XREGISTER32 into YREGISTER32 and ROR32 9 times
+				LUP 2
+				RIGHTROTATEY32						; ROR32 2 more times
 				--^
 								
-				TAY32								; should store partial result at YREGISTER32
+				STA YREGISTER32		
+				;;TAY32								; should store partial result at YREGISTER32
 
 														; X still = X*4
-				LDAW									; load W[a-15] into INPUT32
+				LDAWR15									; load W[a-15] into INPUT32
 
-RIGHTSHIFT3		LUP	3
+RIGHTSHIFT3		LUP	2
 				RIGHTSHIFT32						; shift right, ignore carry
 				--^
+
 													; store partial result in INPUT32
 
 *	        s0 = (w[i-15] rightrotate  7) xor (w[i-15] rightrotate 18) xor (w[i-15] rightshift  3)
 *			s0 = (XREGISTER32) xor (YREGISTER32) xor (INPUT32)
 
-				XORAXY32
+				XORAXY32T0
 
 ; A32 -> TEMP0
-				STATEMP0								
+				;;STATEMP0								
 			
 *	        s1 := (w[i- 2] rightrotate 17) xor (w[i- 2] rightrotate 19) xor (w[i- 2] rightshift 10)
-				PLA									; i=16
-				PHA									; back to stack
-				SEC									; set carry for subtract
-				SBC	#$02							; -02
+				;;SEC									; set carry for subtract
+				;;SBC	#$02							; -02
 
-				ASL
-				ROL
-				TAX									; X = X*4 again
-
-				LDAW								; load W14 into INPUT32
+				LDXWR2								; load W14 into XREGISTER32 and ROR32 17 times
+				STA XREGISTER32		
 									
-RIGHTROTATE17	RIGHTROTATE8
-				RIGHTROTATE8
-				RIGHTROTATE32					; ROR32 17 times
-				TAX32							; should store partial result at XREGISTER32
+RIGHTROTATE17			TXYR32							; copy XREGISTER32 to YREGISTER32 and ROR32
 
-RIGHTROTATE2	LUP	2
-				RIGHTROTATE32					; ROR32 2 more times
-				--^
-				TAY32							; should store partial result at YREGISTER32
+RIGHTROTATE2			RIGHTROTATEY32					; ROR32 1 more time
+				STA YREGISTER32		
+				;;TAY32							; should store partial result at YREGISTER32
 
 													; ; X = X*4
-				LDAW								; load W14 into INPUT32
+				LDAWS248							; load W14 into INPUT32 and ROR32
 
-RIGHTSHIFT10	RIGHTSHIFT8
-				LUP 2
-				RIGHTSHIFT32					; shift right, ignore carry
-				--^
+RIGHTSHIFT10	;;RIGHTSHIFT8
+				;;LUP 2
+				RIGHTSHIFT24					; shift right, ignore carry
+				;;--^
 													; store partial result in INPUT32
 *	        s1 := (w[i- 2] rightrotate 17) xor (w[i- 2] rightrotate 19) xor (w[i- 2] rightshift 10)
 *	        s1 := (XREGISTER32) xor (YREGISTER32) xor (INPUT32)
-
-				XORAXY32
-
 *	        w[i] := w[i-16] + s0 + w[i-7] + s1
 *	        w[i] := w[i-16] + TEMP0 + w[i-7] + INPUT32
-
-				TAX32							; INPUT32 to XREGISTER32
-
-; TEMP0 -> A32				
-				LDATEMP0
-
 *	        w[i] := w[i-16] + INPUT32 + w[i-7] + XREGISTER32
 				CLC
-				ADC32							; add S0 and S1
-				TAX32							; transfer to XREGISTER32
-				
-				PLA								; copy A from stack
-				PHA								; i=16
-				SEC
-				SBC	#$10						; w[0]
-				TAX
 
-				; load W00 into pointer, add with X32
-				LDWADDX						; takes X
+				XORAXYADD24
 
-				TAX32							; transfer to XREGISTER32
+				;;SEC
+				;;SBC	#$10						; w[0]
 
-				PLA								; copy A from stack
-				PHA								; i=16
-				SEC
-				SBC	#$07						; w[09]
-				TAX
+				; load W00 into pointer, add with X32, store to X32
+				LDWADDXX16					; takes X
+
+				;;TAX32							; transfer to XREGISTER32
+
+				;;SEC
+				;;SBC	#$07						; w[09]
 
 				; load W09 into pointer, add with X32
-				LDWADDX						; takes X
-
 				; store result in w[i]
-				PLA								; copy A from stack
-				PHA								; i=16
+
+				LDWADDX7STA32					; takes X, store in W16
+
 												
-STOREW			LDWSTA32						; store in W16
+STOREW			;;LDWSTA32						; store in W16
 
 				JMP EXTEND						; repeat until i=63
 
@@ -466,116 +429,117 @@ COMPRESSION
 *	    for i from 0 to 63
 
 				LDA #$00
-COMPRESS		PHA									; round number to stack
+COMPRESS			TAX
 					
 *	        S1 := (e rightrotate 6) xor (e rightrotate 11) xor (e rightrotate 25)
 
-				LDVLDA 4							; pointer to VE
+				LDVLDXR32 4							; pointer to VE, ROR32
 
-RIGHTROTATE06	LUP 6
-				RIGHTROTATE32					; shift right, ignore carry
+RIGHTROTATE06	LUP 5
+				RIGHTROTATEX32					; shift right, ignore carry
 				--^
-				TAX32							; result in XREGISTER32
-				
-RIGHTROTATE11	LUP 5
-				RIGHTROTATE32					; shift right 5 more times=11, ignore carry
+				STA XREGISTER32
+
+				;;TAX32							; result in XREGISTER32
+				TXYR32
+
+RIGHTROTATE11	LUP 4
+				RIGHTROTATEY32					; shift right 5 more times=11, ignore carry
 				--^
-				TAY32							; result in YREGISTER32
+				STA YREGISTER32
+				;;TAY32							; result in YREGISTER32
 				
-RIGHTROTATE25	RIGHTROTATE8
-				LUP 6
-				RIGHTROTATE32					; shift right 14 more times=25, ignore carry
+RIGHTROTATE25	RIGHTROTATEYA8
+				LUP 5
+				RIGHTROTATEA32					; shift right 14 more times=25, ignore carry
 				--^
 				
 *	        S1 := (XREGISTER32) xor (YREGISTER32) xor (INPUT32)
 
-				XORAXY32
+				XORAXY32S1
 				
 
 ;S1
-				STAS1								; store INPUT32 in S1
+				;;STAS1								; store INPUT32 in S1
 
 
 **** CHOICE and MAJ always take the same 3 arguments - make macros
 														
 *	        ch := (e and f) xor ((not e) and g)
-
-				CHOICE32						
 ; CH in INPUT32
 *	        temp1 := Vh + S1 + ch + k[i] + w[i] = TEMP0
 
+				CHOICE32ADD						
+
 ; S1 + CH
-				LDSADC32 4							; (S1 + ch) in INPUT32
+				;;LDSADC32 4							; (S1 + ch) in INPUT32
 				
 ; + VH
 				LDVHADC32
 				
-				PLA									; pull i from stack
-				PHA									; back in stack
-				TAX
 				LDKADC32									; K[i] in pointer
 ; + K[i]
 				
-				PLA									; pull i from stack
-				PHA									; back in stack
-				TAX
-				LDWADC								; W[i] in pointer
+				LDWADCS0							; W[i] in pointer
 ; + W[i]
 ;				LDXADC32							; (S1 + ch + VH + k[i] + w[i]) in INPUT32
 				
 ; = TEMP0
-				STATEMP0							; store temp1 at TEMP0
+				;;STATEMP0							; store temp1 at TEMP0
 
 
 
 *	        S0 := (a rightrotate 2) xor (a rightrotate 13) xor (a rightrotate 22)
 
-				LDVLDA 0								; pointer to VA
+				LDVLDXR32 0								; pointer to VA, ROR32
 
-RIGHTROTATE02	LUP 2
-				RIGHTROTATE32					; ROR 2 times
-				--^
-				TAX32							; result in XREGISTER32
+RIGHTROTATE02	;;LUP 2
+				RIGHTROTATEX32					; ROR 2 times
+				;;--^
+				STA XREGISTER32
+
+				;;TAX32							; result in XREGISTER32
 				
-RIGHTROTATE13	RIGHTROTATE8
-				LUP 3
-				RIGHTROTATE32					; ROR 11 more times=13
+RIGHTROTATE13	RIGHTROTATEXY8
+				LUP 2
+				RIGHTROTATEY32					; ROR 11 more times=13
 				--^
-				TAY32							; result in YREGISTER32
+				STA YREGISTER32
+				;;TAY32							; result in YREGISTER32
 				
 RIGHTROTATE22	RIGHTROTATE8
-				RIGHTROTATE32					; ROR 9 more times=22
+				RIGHTROTATEA32					; ROR 9 more times=22
 
 				
 *	        S0 := (XREGISTER32) xor (YREGISTER32) xor (INPUT32)
 
-				XORAXY32
+				XORAXY32S0
 
 ;S0				
-				STAS0								; store INPUT32 in S0
+				;;STAS0								; store INPUT32 in S0
 
 
 **** CHOICE and MAJ always take the same 3 arguments - make macros
 
 *	        maj := (a and b) xor (a and c) xor (b and c)
-													; load A,B,C into A32,X32,Y32
-				MAJ32								; MAJ in INPUT32
-
 *	        temp2 := S0 + maj
 *	        temp2 := S0 + INPUT32
+													; load A,B,C into A32,X32,Y32
+				MAJ32ADDT1							; MAJ in INPUT32
+
 													; load S0 into X32
 ;S0 -> X32
-				LDA STABLELO						; takes X as argument
-				STA $00	
-				LDA STABLEHI	
-				STA $01       		  				; now word/pointer at $0+$1 points to 32bit word at STABLE,X 
-				LDX32								; S0 in XREGISTER32
+				;;LDA STABLELO						; takes X as argument
+				;;STA $00	
+				;;LDA STABLEHI	
+				;;STA $01       		  				; now word/pointer at $0+$1 points to 32bit word at STABLE,X 
+				;;LDX32								; S0 in XREGISTER32
 				
-				CLC
-				ADC32								; TEMP2 in INPUT32	
+				;;CLC
+				;;ADC32								; TEMP2 in INPUT32	
 				
 ;A32 -> TEMP1
-				STATEMP1							; temp2 to TEMP1
+				;;STATEMP1							; temp2 to TEMP1
 				
 
 				
@@ -594,17 +558,17 @@ ROTATE
 
 *	        Ve := Vd + temp1
 
-				LDVLDA 3
+				LDVADDT0STA 3
 
 ;TEMP0 -> X32
-				LDX TEMPLO						
-				STX $00	
-				LDX TEMPHI
-				STX $01       		  				; now word/pointer at $0+$1 points to TEMP0
+				;;LDX TEMPLO						
+				;;STX $00	
+				;;LDX TEMPHI
+				;;STX $01       		  				; now word/pointer at $0+$1 points to TEMP0
 
-				LDXADC32
+				;;LDXADC32
 
-				LDVSTA 4
+				;;LDVSTA 4
 
 
 
@@ -621,24 +585,24 @@ ROTATE
 *	        Va := temp1 + temp2
 
 ;TEMP1 -> X32
-				LDX TEMPLO+1						
-				STX $00	
-				LDX TEMPHI+1
-				STX $01       		  		; now word/pointer at $0+$1 points to TEMP1
+				;;LDX TEMPLO+1						
+				;;STX $00	
+				;;LDX TEMPHI+1
+				;;STX $01       		  		; now word/pointer at $0+$1 points to TEMP1
 
-				LDX32						; load TEMP1 into XREGISTER32
+				;;LDX32						; load TEMP1 into XREGISTER32
 
 ;TEMP0 -> A32
-				LDATEMP0
-				CLC
-				ADC32
+				LDATEMP0ADD 0
+				;;CLC
+				;;ADC32
 
-				LDVSTA 0
+				;;LDVSTA 0
 
-COMPRESSLOOP	PLA							; Round 0-63 from stack
+COMPRESSLOOP	TXA							; Round 0-63 from stack
 				CLC
-				ADC #$01
-				CMP #$40
+				ADC #$04
+				;;CMP #$40
 				BEQ ADDHASH				; checks to see if we can skip or pull from cache
 
 				JMP COMPRESS
@@ -690,29 +654,13 @@ ADDHASH
 ; AND chunk=0 AND pass=0
 ; then write to CACHEDHASH
 
-				CLC
-				LDA HASHCACHED					; has chunk0 pass0 already done?
-				ADC HASHPASS
-				ADC CURRENTCHUNK
-				BEQ HASHTOCACHE 				; otherwise
-				JMP CHECKCHUNK					; jump over and check which chunk we're doing
-
-HASHTOCACHE
-]cachebyte = 0
-				LUP 32
-				LDA H00 + ]cachebyte
-				STA CACHEDHASH + ]cachebyte
-]cachebyte = ]cachebyte+1
-				--^				
-
-				LDA #$01
-				STA HASHCACHED					; don't repeat.
-
-
-
 CHECKCHUNK		LDA CURRENTCHUNK
 				BNE CHECKPASS					; did I just do chunk 0? INC and go back and do second chunk.
 				INC CURRENTCHUNK				; set to chunk 1				
+
+				LDA HASHCACHED					; has chunk0 pass0 already done?
+				BEQ HASHTOCACHE 				; otherwise
+
 				JMP COPYCHUNKS					; 
 
 CHECKPASS		LDA HASHPASS					; pass 0? set the message to the hash output and go again
@@ -722,6 +670,20 @@ CHECKPASS		LDA HASHPASS					; pass 0? set the message to the hash output and go 
 				JMP DIGEST
 				
 INCHASHPASS		INC HASHPASS					; 
+				JMP HASHTOMESSAGE
+
+HASHTOCACHE
+]cachebyte = 0
+				LUP 32
+				LDA H00 + ]cachebyte
+				STA CACHEDHASH + ]cachebyte
+]cachebyte = ]cachebyte+1
+				--^				
+
+				INC HASHCACHED					; don't repeat.
+				JMP COPYCHUNKS					; 
+
+
 
 HASHTOMESSAGE
 				
@@ -737,9 +699,9 @@ COPYHASH
 ]hashbyte = ]hashbyte - 1
 				--^
 
-				LDA MESSAGE2LO
+				LDA #<MESSAGE2
 				STA	CURRENTMESSAGELO
-				LDA MESSAGE2HI
+				LDA #>MESSAGE2
 				STA	CURRENTMESSAGEHI
 
 ******* only need one chunk for message2
@@ -749,66 +711,55 @@ COPYHASH
 
 DIGEST											; done the thing. 
 
-				LDA #$14
-				STA CV
-				LDA #$00
-				STA CH
 				LDA #$06						;	set the memory location for line $14.
 				STA $29							;	
 				LDA #$50						;	
 				STA $28							;	
+				LDY #$00				; 0
 				
 PRNONCE
 ]hashbyte		=	0				
 				LUP 4
-				LDA NONCE + ]hashbyte							; load from table pointer	
+				LDX NONCE + ]hashbyte							; load from table pointer	
 				PRHEX							; PRBYTE - clobbers Y
 													;**** ROLL MY OWN?
 ]hashbyte = ]hashbyte + 1
 				--^
-
 				INCNONCE							
 
 
 
-				INC CV								; down one line
-				INC CV								; down one line
-				LDA #$00
-				STA CH								; left cursor
 				INC $29								; 0650 -> 0750
-				LDA #$50						;	
-				STA $28							;	
 
 
 PRDIGEST		
-				LDA H00				
+				LDX H00				
 				BNE PRBYTE1
 				; if zero, spin the coin
 				JSR FLIPCOIN
-				LDA H00				
-PRBYTE1			PRHEX							
+				LDX H00				
+PRBYTE1				LDY #$00				; 0
+				PRHEX							
 												
 
 
 
 ]hashbyte		=	1				
 				LUP 19
-				LDA H00 + ]hashbyte				
+				LDX H00 + ]hashbyte				
 				PRHEX							
 												
 ]hashbyte = ]hashbyte + 1
 				--^
 
 
-NEXTLINE		LDA #$00
-				STA CH
-				INC CV
-				LDA #$D0
+NEXTLINE			LDA #$D0
 				STA $28				; $0750 to $07D0
+				LDY #$00				; 0
 
 ]hashbyte		=	20				
 				LUP 12
-				LDA H00 + ]hashbyte				
+				LDX H00 + ]hashbyte				
 				PRHEX							
 												
 ]hashbyte = ]hashbyte + 1
@@ -829,19 +780,19 @@ DONEWORK		; processed all the 2^32 nonce values. WTF?
 *	macros (expanded at assembly time)
 **************************************************
 
-LDW			MAC
-			LDA WTABLELO,X					; takes X as argument
-			STA $00
-			LDA WTABLEHI,X
-			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at WTABLE,X 
-            <<<            ; End of Macro
+;;LDW			MAC
+;;			LDA WTABLELO,X					; takes X as argument
+;;			STA $00
+;;			LDA WTABLEHI,X
+;;			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at WTABLE,X 
+;;            <<<            ; End of Macro
 
-LDK			MAC
-			LDA KTABLELO,X					; takes X as argument
-			STA $00
-			LDA KTABLEHI,X
-			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at KTABLE,X 
-            <<<            ; End of Macro
+;;LDK			MAC
+;;			LDA KTABLELO,X					; takes X as argument
+;;			STA $00
+;;			LDA KTABLEHI,X
+;;			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at KTABLE,X 
+;;            <<<            ; End of Macro
 
 ;	LDH			MAC
 ;				LDA HTABLELO,X					; takes X as argument
@@ -850,34 +801,62 @@ LDK			MAC
 ;				STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at HTABLE,X 
 ;	            <<<            ; End of Macro
 
-LDV			MAC
-				LDA VTABLELO,X					; takes X as argument
-				STA $00
-				LDA VTABLEHI,X
-				STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at VTABLE,X 
-	            <<<            ; End of Macro
+;;LDV			MAC
+;;				LDA VTABLELO,X					; takes X as argument
+;;				STA $00
+;;				LDA VTABLEHI,X
+;;				STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at VTABLE,X 
+;;	            <<<            ; End of Macro
 
-LDVV		MAC
-			LDA VTABLELO+]1					; takes X as argument
-			STA $00
-			LDA VTABLEHI+]1
-			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at VTABLE,X 
-            <<<            ; End of Macro
+;;LDVV		MAC
+;;			LDA VTABLELO+]1					; takes X as argument
+;;			STA $00
+;;			LDA VTABLEHI+]1
+;;			STA $01       		  			; now word/pointer at $0+$1 points to 32bit word at VTABLE,X 
+;;            <<<            ; End of Macro
 
 
 
-LDVLDA		MAC
-			LDA VA + ]1 + ]1 + ]1 + ]1 +3		; load from table pointer
-			STA INPUT32+3						; store in 32 bit "accumulator"
+LDVLDXR32	MAC
+			LDA VA + ]1 + ]1 + ]1 + ]1			; load from table pointer
+			LSR
+			STA XREGISTER32						; store in 32 bit "accumulator"
+
+			LDA VA + ]1 + ]1 + ]1 + ]1 +1		; load from table pointer
+			ROR
+			STA XREGISTER32+1					; store in 32 bit "accumulator"
 	
 			LDA VA + ]1 + ]1 + ]1 + ]1 +2		; load from table pointer
-			STA INPUT32+2						; store in 32 bit "accumulator"
+			ROR
+			STA XREGISTER32+2					; store in 32 bit "accumulator"
+	
+			LDA VA + ]1 + ]1 + ]1 + ]1 +3		; load from table pointer
+			ROR
+			STA XREGISTER32+3					; store in 32 bit "accumulator"
+
+			LDA #$00							; accumulator to 0
+			ROR								; CARRY into bit7
+			ORA	XREGISTER32					; acccumulator bit7 into BIT31
+	
+            <<<            ; End of Macro
+
+LDVADDT0STA	MAC
+			CLC
+			LDA VA + ]1 + ]1 + ]1 + ]1 +3		; load from table pointer
+			ADC TEMP0 +3
+			STA VA + 16 +3				; load from table pointer
+	
+			LDA VA + ]1 + ]1 + ]1 + ]1 +2		; load from table pointer
+			ADC TEMP0 +2
+			STA VA + 16 +2				; load from table pointer
 	
 			LDA VA + ]1 + ]1 + ]1 + ]1 +1		; load from table pointer
-			STA INPUT32+1						; store in 32 bit "accumulator"
+			ADC TEMP0 +1
+			STA VA + 16 +1				; load from table pointer
 	
 			LDA VA + ]1 + ]1 + ]1 + ]1			; load from table pointer
-			STA INPUT32							; store in 32 bit "accumulator"
+			ADC TEMP0
+			STA VA + 16				; load from table pointer
 
             <<<            ; End of Macro
 
@@ -930,6 +909,76 @@ VXTOVY		MAC										; rotate Vn to Vn-1
 
 
 
+LDXWR15		MAC									; X indicates which W0x word to read from
+
+				LDA W00 - 60,X						; load from table pointer
+				LSR
+				STA XREGISTER32							; store in 32 bit "accumulator"
+
+				LDA W00 + 1 - 60,X						; load from table pointer
+				ROR
+				STA XREGISTER32+1						; store in 32 bit "accumulator"
+
+				LDA W00 + 2 - 60,X						; load from table pointer
+				ROR
+				STA XREGISTER32+2						; store in 32 bit "accumulator"
+
+				LDA W00 + 3 - 60,X						; load from table pointer
+				ROR
+				STA XREGISTER32+3						; store in 32 bit "accumulator"
+
+				LDA #$00							; accumulator to 0
+				ROR								; CARRY into bit7
+				ORA	XREGISTER32						; acccumulator bit7 into BIT31
+
+			<<<
+
+
+LDXWR2		MAC									; X indicates which W0x word to read from
+
+				LDA W00 + 2 - 8,X						; load from table pointer
+				LSR
+				STA XREGISTER32							; store in 32 bit "accumulator"
+
+				LDA W00 + 3 - 8,X						; load from table pointer
+				ROR
+				STA XREGISTER32+1						; store in 32 bit "accumulator"
+
+				LDA W00 - 8,X							; load from table pointer
+				ROR
+				STA XREGISTER32+2						; store in 32 bit "accumulator"
+
+				LDA W00 + 1 - 8,X						; load from table pointer
+				ROR
+				STA XREGISTER32+3						; store in 32 bit "accumulator"
+
+				LDA #$00							; accumulator to 0
+				ROR								; CARRY into bit7
+				ORA	XREGISTER32						; acccumulator bit7 into BIT31
+
+			<<<
+
+
+LDAWR15		MAC									; X indicates which W0x word to read from
+			
+			LDA W00 - 60,X							; load from table pointer
+			LSR
+			STA INPUT32							; store in 32 bit "accumulator"
+
+			LDA W00 + 1 - 60,X						; load from table pointer
+			ROR
+			STA INPUT32+1							; store in 32 bit "accumulator"
+	
+			LDA W00 + 2 - 60,X						; load from table pointer
+			ROR
+			STA INPUT32+2							; store in 32 bit "accumulator"
+	
+			LDA W00 + 3 - 60,X						; load from table pointer
+			ROR
+	
+			<<<
+			
+
 LDAW		MAC									; X indicates which W0x word to read from
 			
 			LDA W00 + 3,X						; load from table pointer
@@ -947,11 +996,23 @@ LDAW		MAC									; X indicates which W0x word to read from
 			<<<
 			
 
-LDWSTA32	MAC									; store INPUT32 in W0x word
+LDAWS248	MAC									; X indicates which W0x word to read from
+			
+			LDA W00 - 8,X							; load from table pointer
+			LSR
+			STA INPUT32+1						; store in 32 bit "accumulator"
 
-			ASL
-			ROL
-			TAX									;x=A*4
+			LDA W00 + 1 - 8,X					; load from table pointer
+			ROR
+			STA INPUT32+2						; store in 32 bit "accumulator"
+	
+			LDA W00 + 2 - 8,X					; load from table pointer
+			ROR
+	
+			<<<
+			
+
+LDWSTA32	MAC									; store INPUT32 in W0x word
 
 			LDA INPUT32+3						; load from 32 bit "accumulator"
 			STA W00 + 3,X							; store in table pointer
@@ -1059,19 +1120,24 @@ STATEMP0	MAC				; puts 4 bytes from 32 bit "accumulator" INPUT32 into TEMP0
 
 
 
-LDATEMP0		MAC				; puts 4 bytes from ($01,$00) into 32 bit "accumulator" INPUT32, clobbers A,Y
+LDATEMP0ADD		MAC				; puts 4 bytes from ($01,$00) into 32 bit "accumulator" INPUT32, clobbers A,Y
 
+			CLC
 			LDA TEMP0+3							; load from table pointer
-			STA INPUT32+3						; store in 32 bit "accumulator"
-	
+			ADC INPUT32+3						; store in 32 bit "accumulator"
+			STA VA + ]1 + ]1 + ]1 + ]1 +3		; load from table pointer	
+
 			LDA TEMP0+2							; load from table pointer
-			STA INPUT32+2						; store in 32 bit "accumulator"
-	
+			ADC INPUT32+2						; store in 32 bit "accumulator"
+			STA VA + ]1 + ]1 + ]1 + ]1 +2		; load from table pointer
+
 			LDA TEMP0+1							; load from table pointer
-			STA INPUT32+1						; store in 32 bit "accumulator"
-	
+			ADC INPUT32+1						; store in 32 bit "accumulator"
+			STA VA + ]1 + ]1 + ]1 + ]1 +1		; load from table pointer
+
 			LDA TEMP0							; load from table pointer
-			STA INPUT32							; store in 32 bit "accumulator"
+			ADC INPUT32							; store in 32 bit "accumulator"
+			STA VA + ]1 + ]1 + ]1 + ]1		; load from table pointer
 
             <<<            ; End of Macro
 ;/LDATEMP0
@@ -1199,15 +1265,71 @@ TYX32		MAC
 
 
 
-RIGHTROTATE8	MAC							; rotate INPUT32 by a full byte
-			LDY	INPUT32+3
-			LDA INPUT32+2
-			STA INPUT32+3
-			LDA INPUT32+1
+TXYR32		MAC				
+			LSR								; load from 32 bit "X register"
+			STA YREGISTER32							; store in YREGISTER32
+			LDA XREGISTER32+1							; load from 32 bit "X register"
+			ROR
+			STA YREGISTER32+1							; store in YREGISTER32
+			LDA XREGISTER32+2							; load from 32 bit "X register"
+			ROR
+			STA YREGISTER32+2							; store in YREGISTER32
+			LDA XREGISTER32+3							; load from 32 bit "X register"
+			ROR
+			STA YREGISTER32+3							; store in YREGISTER32
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	YREGISTER32							; acccumulator bit7 into BIT31
+
+            <<<            ; End of Macro
+
+;/TXYR32
+
+
+
+RIGHTROTATEXY8	MAC							; rotate INPUT32 by a full byte
+			STA YREGISTER32+1
+			LDA XREGISTER32+3
+			LSR
+			STA YREGISTER32
+			ROR YREGISTER32+1
+			LDA XREGISTER32+1
+			ROR
+			STA YREGISTER32+2
+			LDA XREGISTER32+2
+			ROR
+			STA YREGISTER32+3
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	YREGISTER32						; acccumulator bit7 into BIT31
+            <<<            ; End of Macro
+;/RIGHTROTATEXY8
+
+RIGHTROTATEYA8	MAC							; rotate INPUT32 by a full byte
+			STA INPUT32+1
+			LDA YREGISTER32+3
+			LSR
+			STA INPUT32
+			ROR INPUT32+1
+			LDA YREGISTER32+1
+			ROR
 			STA INPUT32+2
-			LDA INPUT32
+			LDA YREGISTER32+2
+			ROR
+			STA INPUT32+3
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	INPUT32							; acccumulator bit7 into BIT31
+            <<<            ; End of Macro
+;/RIGHTROTATEYA8
+
+RIGHTROTATE8	MAC							; rotate INPUT32 by a full byte
 			STA	INPUT32+1
-			STY INPUT32
+			LDA YREGISTER32+1
+			STA INPUT32+2
+			LDA YREGISTER32+2
+			STA INPUT32+3
+			LDA YREGISTER32+3
             <<<            ; End of Macro
 ;/RIGHTROTATE8
 
@@ -1224,26 +1346,100 @@ RIGHTSHIFT8	MAC									; rotate 32 bits right, 0->BIT31, clobbers AY
 ;/RIGHTSHIFT8
 
 
+RIGHTROTATEX32	MAC								; rotate 32 bits right, BIT0->BIT31, clobbers AY
+			RIGHTSHIFTX32
+
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	XREGISTER32							; acccumulator bit7 into BIT31
+
+            <<<            ; End of Macro
+;/RIGHTROTATEX32
+		
+												
+RIGHTROTATEY32	MAC								; rotate 32 bits right, BIT0->BIT31, clobbers AY
+			RIGHTSHIFTY32
+
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	YREGISTER32							; acccumulator bit7 into BIT31
+
+            <<<            ; End of Macro
+;/RIGHTROTATEY32
+		
+												
 RIGHTROTATE32	MAC								; rotate 32 bits right, BIT0->BIT31, clobbers AY
 			RIGHTSHIFT32
 
 			LDA #$00							; accumulator to 0
 			ROR									; CARRY into bit7
 			ORA	INPUT32								; acccumulator bit7 into BIT31
-			STA INPUT32		
 
             <<<            ; End of Macro
 ;/RIGHTROTATE32
 		
 												
+RIGHTROTATEA32	MAC								; rotate 32 bits right, BIT0->BIT31, clobbers AY
+			RIGHTSHIFTA32
+
+			LDA #$00							; accumulator to 0
+			ROR									; CARRY into bit7
+			ORA	INPUT32								; acccumulator bit7 into BIT31
+
+            <<<            ; End of Macro
+;/RIGHTROTATEA32
+		
+												
+RIGHTSHIFTX32	MAC									; rotate 32 bits right, 0->BIT31, clobbers AY
+			LSR
+			STA XREGISTER32		
+			ROR XREGISTER32+1							; put result into XREGISTER32
+			ROR XREGISTER32+2							; put result into XREGISTER32
+			ROR XREGISTER32+3							; put result into XREGISTER32
+			
+            <<<            ; End of Macro
+;/RIGHTSHIFTX32
+
+
+RIGHTSHIFTY32	MAC									; rotate 32 bits right, 0->BIT31, clobbers AY
+			LSR
+			STA YREGISTER32		
+			ROR YREGISTER32+1							; put result into YREGISTER32
+			ROR YREGISTER32+2							; put result into YREGISTER32
+			ROR YREGISTER32+3							; put result into YREGISTER32
+			
+            <<<            ; End of Macro
+;/RIGHTSHIFTY32
+
+
 RIGHTSHIFT32	MAC									; rotate 32 bits right, 0->BIT31, clobbers AY
-			LSR INPUT32
+			LSR INPUT32		
+			ROR INPUT32+1								; put result into INPUT32
+			ROR INPUT32+2								; put result into INPUT32
+			ROR									; put result into INPUT32
+			
+            <<<            ; End of Macro
+;/RIGHTSHIFT32
+
+
+RIGHTSHIFTA32	MAC									; rotate 32 bits right, 0->BIT31, clobbers AY
+			LSR		
+			STA INPUT32
 			ROR INPUT32+1								; put result into INPUT32
 			ROR INPUT32+2								; put result into INPUT32
 			ROR INPUT32+3								; put result into INPUT32
 			
             <<<            ; End of Macro
-;/RIGHTSHIFT32
+;/RIGHTSHIFTA32
+
+
+RIGHTSHIFT24	MAC									; rotate 24 bits right, 0->BIT23, clobbers AY
+			LSR INPUT32+1								; put result into INPUT32
+			ROR INPUT32+2								; put result into INPUT32
+			ROR									; put result into INPUT32
+			
+            <<<            ; End of Macro
+;/RIGHTSHIFT24
 
 
 ADC32	MAC	; Adds INPUT32 and XREGISTER32 with carry, if any, clobbers A,Y
@@ -1269,11 +1465,7 @@ ADC32	MAC	; Adds INPUT32 and XREGISTER32 with carry, if any, clobbers A,Y
 
 
 LDKADC32	MAC								; puts 4 bytes from K0n into 32 bit "accumulator" INPUT32, clobbers A,Y
-			ASL
-			ROL
-			
-			TAX								;x=x*4
-
+			CLC
 			LDA K00 + 3,X					; load from table pointer
 			ADC INPUT32+3				; ADD with CARRY with OPERAND
 			STA INPUT32+3					; output to INPUT32, overflow into carry
@@ -1317,32 +1509,71 @@ LDVHADC32	MAC								; puts 4 bytes from K0n into 32 bit "accumulator" INPUT32, 
 ;/LDVHADC32
 
 
-LDWADC	MAC								; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
-
-			TXA
-			ASL
-			ROL
-			TAX								; x=x*4
-
+LDWADCS0	MAC							; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
+			CLC
 			LDA W00 + 3,X					; load from table pointer
 			ADC INPUT32+3				; ADD with CARRY with OPERAND
-			STA INPUT32+3					; output to INPUT32, overflow into carry
+			STA TEMP0+3					; output to TEMP0, overflow into carry
 	
 			LDA W00 + 2,X					; load from table pointer
 			ADC INPUT32+2				; ADD with CARRY with OPERAND
-			STA INPUT32+2					; output to INPUT32, overflow into carry
+			STA TEMP0+2					; output to TEMP0, overflow into carry
 	
 			LDA W00 + 1,X					; load from table pointer
 			ADC INPUT32+1				; ADD with CARRY with OPERAND
-			STA INPUT32+1					; output to INPUT32, overflow into carry
+			STA TEMP0+1					; output to TEMP0, overflow into carry
 	
 			LDA W00,X						;load from table pointer
 			ADC INPUT32					; ADD with CARRY with OPERAND
-			STA INPUT32						; output to INPUT32, overflow into carry
+			STA TEMP0						; output to TEMP0, overflow into carry
 
             <<<            ; End of Macro
 ;/LDWADC
 
+
+LDWADDXX16	MAC							; puts 4 bytes from W0n into 32 bit "accumulator" XREGISTER32, clobbers A,Y
+
+			CLC
+			LDA W00 + 3 - 64,X				; load from table pointer
+			ADC XREGISTER32+3				; ADD with CARRY with OPERAND
+			STA XREGISTER32+3				; output to INPUT32, overflow into carry
+	
+			LDA W00 + 2 - 64,X				; load from table pointer
+			ADC XREGISTER32+2				; ADD with CARRY with OPERAND
+			STA XREGISTER32+2				; output to INPUT32, overflow into carry
+	
+			LDA W00 + 1 - 64,X				; load from table pointer
+			ADC XREGISTER32+1				; ADD with CARRY with OPERAND
+			STA XREGISTER32+1				; output to INPUT32, overflow into carry
+	
+			LDA W00 - 64,X						;load from table pointer
+			ADC XREGISTER32					; ADD with CARRY with OPERAND
+			STA XREGISTER32					; output to INPUT32, overflow into carry
+
+            <<<            ; End of Macro
+;/LDWADDXX
+
+LDWADDX7STA32	MAC							; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
+
+			CLC
+			LDA W00 + 3 - 28,X				; load from table pointer
+			ADC XREGISTER32+3				; ADD with CARRY with OPERAND
+			STA W00 + 3,X							; store in table pointer
+	
+			LDA W00 + 2 - 28,X				; load from table pointer
+			ADC XREGISTER32+2				; ADD with CARRY with OPERAND
+			STA W00 + 2,X							; store in table pointer
+	
+			LDA W00 + 1 - 28,X				; load from table pointer
+			ADC XREGISTER32+1				; ADD with CARRY with OPERAND
+			STA W00 + 1,X							; store in table pointer
+	
+			LDA W00 - 28,X						;load from table pointer
+			ADC XREGISTER32					; ADD with CARRY with OPERAND
+			STA W00,X							; store in table pointer
+
+            <<<            ; End of Macro
+;/LDWADDX
 
 LDWADDX	MAC								; puts 4 bytes from W0n into 32 bit "accumulator" INPUT32, clobbers A,Y
 
@@ -1472,31 +1703,108 @@ AND32	MAC										; AND function, output to INPUT32, clobbers AY
 
 
 
-XORAXY32	MAC
+XORAXY32T0	MAC
 
-			LDA INPUT32+3								; LDA byte
 			EOR XREGISTER32+3								; EOR with OPERAND
 			EOR YREGISTER32+3								; EOR with OPERAND
-			STA	INPUT32+3								; output to INPUT32
+			STA	TEMP0+3									; output to TEMP0
 			
-			LDA INPUT32+2								; LDA byte
+			LDA INPUT32+2									; LDA byte
 			EOR XREGISTER32+2								; EOR with OPERAND
 			EOR YREGISTER32+2								; EOR with OPERAND
-			STA	INPUT32+2								; output to INPUT32
+			STA	TEMP0+2									; output to TEMP0
 			
-			LDA INPUT32+1								; LDA byte
+			LDA INPUT32+1									; LDA byte
 			EOR XREGISTER32+1								; EOR with OPERAND
 			EOR YREGISTER32+1								; EOR with OPERAND
-			STA	INPUT32+1								; output to INPUT32
+			STA	TEMP0+1									; output to INPUT32
 			
 			LDA INPUT32								; LDA byte
 			EOR XREGISTER32								; EOR with OPERAND
 			EOR YREGISTER32								; EOR with OPERAND
-			STA	INPUT32								; output to INPUT32
+			STA	TEMP0								; output to TEMP0
 	
 
 			<<<            ; End of Macro
 ;/XORAXY32            
+
+
+XORAXY32S1	MAC
+
+			EOR XREGISTER32								; EOR with OPERAND
+			EOR YREGISTER32								; EOR with OPERAND
+			STA	S1								; output to INPUT32
+
+			LDA INPUT32+1								; LDA byte
+			EOR XREGISTER32+1								; EOR with OPERAND
+			EOR YREGISTER32+1								; EOR with OPERAND
+			STA	S1+1									; output to INPUT32
+			
+			LDA INPUT32+2								; LDA byte
+			EOR XREGISTER32+2								; EOR with OPERAND
+			EOR YREGISTER32+2								; EOR with OPERAND
+			STA	S1+2									; output to INPUT32
+			
+			LDA INPUT32+3								; LDA byte
+			EOR XREGISTER32+3								; EOR with OPERAND
+			EOR YREGISTER32+3								; EOR with OPERAND
+			STA	S1+3									; output to INPUT32
+			
+			<<<            ; End of Macro
+;/XORAXY32S1
+
+
+XORAXY32S0	MAC
+
+			EOR XREGISTER32								; EOR with OPERAND
+			EOR YREGISTER32								; EOR with OPERAND
+			STA	S0								; output to INPUT32
+
+			LDA INPUT32+1								; LDA byte
+			EOR XREGISTER32+1								; EOR with OPERAND
+			EOR YREGISTER32+1								; EOR with OPERAND
+			STA	S0+1									; output to INPUT32
+			
+			LDA INPUT32+2								; LDA byte
+			EOR XREGISTER32+2								; EOR with OPERAND
+			EOR YREGISTER32+2								; EOR with OPERAND
+			STA	S0+2									; output to INPUT32
+			
+			LDA INPUT32+3								; LDA byte
+			EOR XREGISTER32+3								; EOR with OPERAND
+			EOR YREGISTER32+3								; EOR with OPERAND
+			STA	S0+3									; output to INPUT32
+			
+			<<<            ; End of Macro
+;/XORAXY32S0
+
+
+XORAXYADD24	MAC
+
+			EOR XREGISTER32+3								; EOR with OPERAND
+			EOR YREGISTER32+3								; EOR with OPERAND
+			ADC TEMP0+3									; ADD with CARRY with OPERAND
+			STA	XREGISTER32+3								; output to XREGISTER32
+			
+			LDA INPUT32+2								; LDA byte
+			EOR XREGISTER32+2								; EOR with OPERAND
+			EOR YREGISTER32+2								; EOR with OPERAND
+			ADC TEMP0+2									; ADD with CARRY with OPERAND
+			STA	XREGISTER32+2								; output to XREGISTER32
+			
+			LDA INPUT32+1								; LDA byte
+			EOR XREGISTER32+1								; EOR with OPERAND
+			EOR YREGISTER32+1								; EOR with OPERAND
+			ADC TEMP0+1
+			STA	XREGISTER32+1								; output to XREGISTER32
+			
+			LDA XREGISTER32								; EOR with OPERAND
+			EOR YREGISTER32								; EOR with OPERAND
+			ADC TEMP0									; ADD with CARRY with OPERAND
+			STA	XREGISTER32								; output to XREGISTER32
+	
+			<<<            ; End of Macro
+;/XORAXYADD24            
 
 
 *	Produce the final hash value (big-endian):
@@ -1522,34 +1830,67 @@ NONCEDONE
 
 
 
-MAJ32		MAC	
+MAJ32ADDT1	MAC	
 			; majority function. Takes INPUT32, XREGISTER32 and YREGISTER32, returns with result in INPUT32, clobbers AXY
 			
 			; load VA,VB,VC into AXY
-			
-			LDA VA + 0									
-			LDX VB + 0		
-			LDY VC + 0									
-			MAJ											
+
+			CLC
+			LDA VA + 3				; A and Y, result to RESULT32,4
+			AND VC + 3
+			STA RESULT32+4
+			LDA VB + 3				; X and Y, result to RESULT32,5
+			AND VC + 3
+			STA RESULT32+5
+			; RESULT32,3 xor RESULT32,4 xor RESULT32,5
+			LDA VA + 3
+			AND VB + 3				; A and X, result to RESULT32,3
+			EOR RESULT32+4
+			EOR RESULT32+5
+			ADC S0 + 3
+			STA	INPUT32+3
+
+			LDA VA + 2				; A and Y, result to RESULT32,4
+			AND VC + 2
+			STA RESULT32+4
+			LDA VB + 2				; X and Y, result to RESULT32,5
+			AND VC + 2
+			STA RESULT32+5
+			; RESULT32,3 xor RESULT32,4 xor RESULT32,5
+			LDA VA + 2
+			AND VB + 2				; A and X, result to RESULT32,3
+			EOR RESULT32+4
+			EOR RESULT32+5
+			ADC S0 + 2
+			STA	INPUT32+2
+
+			LDA VA + 1				; A and Y, result to RESULT32,4
+			AND VC + 1
+			STA RESULT32+4
+			LDA VB + 1				; X and Y, result to RESULT32,5
+			AND VC + 1
+			STA RESULT32+5
+			; RESULT32,3 xor RESULT32,4 xor RESULT32,5
+			LDA VA + 1
+			AND VB + 1				; A and X, result to RESULT32,3
+			EOR RESULT32+4
+			EOR RESULT32+5
+			ADC S0 + 1
+			STA	INPUT32+1
+
+			LDA VA + 0				; A and Y, result to RESULT32,4
+			AND VC + 0
+			STA RESULT32+4
+			LDA VB + 0				; X and Y, result to RESULT32,5
+			AND VC + 0
+			STA RESULT32+5
+			; RESULT32,3 xor RESULT32,4 xor RESULT32,5
+			LDA VA + 0
+			AND VB + 0				; A and X, result to RESULT32,3
+			EOR RESULT32+4
+			EOR RESULT32+5
+			ADC S0
 			STA	INPUT32+0		
-
-			LDA VA + 1									
-			LDX VB + 1		
-			LDY VC + 1									
-			MAJ											
-			STA	INPUT32+1		
-
-			LDA VA + 2									
-			LDX VB + 2		
-			LDY VC + 2									
-			MAJ											
-			STA	INPUT32+2		
-
-			LDA VA + 3									
-			LDX VB + 3		
-			LDY VC + 3									
-			MAJ											
-			STA	INPUT32+3		
 
             <<<            ; End of Macro
 				
@@ -1557,115 +1898,70 @@ MAJ32		MAC
 
 
 
-MAJ			MAC				; majority function. Takes A,X and Y, returns with A
-			; maj := (A and X) xor (A and Y) xor (X and Y)
-			
-			STA RESULT32				; A to RESULT32,0
-			
-			STX RESULT32+1				; X to RESULT321
-			
-			STY RESULT32+2				; Y to RESULT322
-				
-			AND RESULT32+1				; A and X, result to RESULT32,3
-			STA RESULT32+3 
-			
-			LDA RESULT32				; A and Y, result to RESULT32,4
-			AND RESULT32+2
-			STA RESULT32+4
-			
-			LDA RESULT32+1				; X and Y, result to RESULT32,5
-			AND RESULT32+2
-			STA RESULT32+5
-
-			; RESULT32,3 xor RESULT32,4 xor RESULT32,5
-			LDA RESULT32+3
-			EOR RESULT32+4
-			EOR RESULT32+5
-						
-            <<<            ; End of Macro
-;/MAJ
-
-
-
-			; choice function. Takes INPUT32 and XREGISTER32, returns with result in INPUT32, clobbers AXY
-CHOICE32	MAC	
-
-			LDA VE + 0					; VE
-			LDX VF + 0					; VF
-			LDY VG + 0					; VG
-			CHOICE
-			STA INPUT32 + 0
-
-			LDA VE + 1					; VE
-			LDX VF + 1					; VF
-			LDY VG + 1					; VG
-			CHOICE
-			STA INPUT32 + 1
-
-			LDA VE + 2					; VE
-			LDX VF + 2					; VF
-			LDY VG + 2					; VG
-			CHOICE
-			STA INPUT32 + 2
-
-			LDA VE + 3					; VE
-			LDX VF + 3					; VF
-			LDY VG + 3					; VG
-			CHOICE
-			STA INPUT32 + 3
-
-			<<<            ; End of Macro
-
-;/CHOICE32
-
-CHOICE		MAC	; choice function. Takes A,X,Y, returns with result in A, clobbers AXY
+			; choice function. Takes INPUT32 and XREGISTER32, adds S1, returns with result in INPUT32, clobbers AXY
+CHOICE32ADD	MAC	
 			; ch := (A and X) xor ((not A) and Y)
 			; (RESULT32,2) EOR ((not A) AND Y)
 			; (RESULT32,2) EOR (RESULT32,1 AND Y)
 			
 			; if bit(A)=0, then bit(Y), else bit(X)
-			
-			STA RESULT32				; A to TEMP
-			STX RESULT32+1				; X to TEMP1
-		
-			AND RESULT32+1				
+
+			CLC
+			LDA VE + 3					; VE
+			AND VF + 3				
 			STA RESULT32+2				; A AND X to TEMP
-		
-			LDA RESULT32				; A back to A
+			LDA VE + 3				; AND with (NOT A)
 			EOR #$FF					; NOT A
-			STA RESULT32+1				; NOT A to TEMP1
-		
-			TYA							; Y to A
-			AND RESULT32+1				; AND with (NOT A)
+			AND VG + 3					; VG
 			EOR RESULT32+2				; EOR (A AND X)
-; result in A
-            <<<            ; End of Macro
-			
-;/CHOICE
+			ADC S1 + 3							; ADD with CARRY with OPERAND
+			STA INPUT32 + 3
+
+			LDA VE + 2					; VE
+			AND VF + 2				
+			STA RESULT32+2				; A AND X to TEMP
+			LDA VE + 2				; AND with (NOT A)
+			EOR #$FF					; NOT A
+			AND VG + 2					; VG
+			EOR RESULT32+2				; EOR (A AND X)
+			ADC S1 + 2							; ADD with CARRY with OPERAND
+			STA INPUT32 + 2
+
+			LDA VE + 1					; VE
+			AND VF + 1				
+			STA RESULT32+2				; A AND X to TEMP
+			LDA VE + 1				; AND with (NOT A)
+			EOR #$FF					; NOT A
+			AND VG + 1					; VG
+			EOR RESULT32+2				; EOR (A AND X)
+			ADC S1 + 1							; ADD with CARRY with OPERAND
+			STA INPUT32 + 1
+
+			LDA VE + 0					; VE
+			AND VF + 0				
+			STA RESULT32+2				; A AND X to TEMP
+			LDA VE + 0				; AND with (NOT A)
+			EOR #$FF					; NOT A
+			AND VG + 0					; VG
+			EOR RESULT32+2				; EOR (A AND X)
+			ADC S1								; ADD with CARRY with OPERAND
+			STA INPUT32 + 0
+
+			<<<            ; End of Macro
+
+;/CHOICE32
 
 PRHEX	MAC			; replaces PRBYTE routine. still uses COUT. You're next, COUT. Watch your back.
 					
-					PHA					; hang onto original value for a moment
-					AND #$F0
-					LSR
-					LSR
-					LSR
-					LSR
-					TAX
-					LDA HEXTOASCII,X	; get ascii code for nibble "0"-"F"
+					LDA HEXTOASCIIHI,X	; get ascii code for nibble "0"-"F"
 
-					LDY CH				; 0
 					STA ($28),Y
-					INC CH				; 1
+					INY				; 1
 
-					PLA
-					AND #$0F			; clear high nibble
-					TAX
-					LDA HEXTOASCII,X	; get ascii code for nibble "0"-"F"
+					LDA HEXTOASCIILO,X	; get ascii code for nibble "0"-"F"
 
-					LDY CH				; 1
 					STA ($28),Y
-					INC CH				; 2
+					INY
 					
 			<<<
 ;/PRHEX
@@ -1673,19 +1969,6 @@ PRHEX	MAC			; replaces PRBYTE routine. still uses COUT. You're next, COUT. Watch
 **************************************************
 *	subroutines
 **************************************************
-FLIPCOIN			JSR ROTATE1
-					LDA #$30
-					JSR WAIT
-					JSR ROTATE2
-					LDA #$30
-					JSR WAIT
-					JSR SPLASHSCREEN				; fancy lo-res graphics
-					RTS
-;/FLIPCOIN					
-
-
-
-
 ROTATE1				LDA	ROTATE1LO		; Setup pointers to move memory
 					STA	$3C				; $3C and $3D for source start
 					LDA	ROTATE1HI
@@ -1711,6 +1994,19 @@ ROTATE2				LDA	ROTATE2LO		; Setup pointers to move memory
 					ADC	#$04			; add $400 to start == end of graphic
 					STA	$3F				; 
 					JMP MOVEIMAGE
+
+FLIPCOIN			JSR ROTATE1
+					LDA #$30
+					JSR WAIT
+					JSR ROTATE2
+					LDA #$30
+					JSR WAIT
+					;;JSR SPLASHSCREEN				; fancy lo-res graphics
+					;;RTS ;fall through
+;/FLIPCOIN					
+
+
+
 
 SPLASHSCREEN		LDA	SPLASHLO		; Setup pointers to move memory
 					STA	$3C				; $3C and $3D for source start
@@ -1778,24 +2074,24 @@ GRABSTORAGE			LDA	($FA),Y			; Grab from storage
 
 FILLSCREENFAST		LDA #$00 
       				LDY #$78 
-      				JSR FILL1
-      				LDY #$50 			; #$78 for all 24 lines.
-      				JSR FILL2
-      				RTS      
+
 FILL1 				DEY
       				STA $400, Y
       				STA $480, Y
       				STA $500, Y
       				STA $580, Y
       				BNE FILL1
-      				RTS
+
+      				LDY #$50 			; #$78 for all 24 lines.
+
 FILL2 				DEY
-					STA $600, Y
-					STA $680, Y
-					STA $700, Y
-					STA $780, Y
-					BNE FILL2
-					RTS
+				STA $600, Y
+				STA $680, Y
+				STA $700, Y
+				STA $780, Y
+				BNE FILL2
+
+      				RTS      
 
 **************************************************
 * MESSAGE TO BE HASHED.
@@ -1870,8 +2166,8 @@ JOBID 			ASC "65e11"
 
 **** Message2 only needs one chunk! ****
 
-MESSAGE2LO		DB <MESSAGE2
-MESSAGE2HI		DB >MESSAGE2
+;;MESSAGE2LO		DB <MESSAGE2
+;;MESSAGE2HI		DB >MESSAGE2
 
 
 MESSAGE2		DS 32				; new message content after first pass produces hash - 256 bits
@@ -1897,11 +2193,11 @@ MESSAGELENGTH2	HEX	00,00,00,00,00,00,01,00
 **************************************************
 
 		
-TEMPLO			DB <TEMP0,<TEMP1
-TEMPHI			DB >TEMP0,>TEMP1		
+;;TEMPLO			DB <TEMP0,<TEMP1
+;;TEMPHI			DB >TEMP0,>TEMP1		
 
-RESULT32LO		DB	<RESULT32
-RESULT32HI		DB	>RESULT32
+;;RESULT32LO		DB	<RESULT32
+;;RESULT32HI		DB	>RESULT32
 
 VA					DS	4
 VB					DS	4
@@ -1913,14 +2209,16 @@ VG					DS	4
 VH					DS	4
 
 ;	VTABLE				DA	VA,VB,VC,VD,VE,VF,VG,VH
-VTABLELO			DB	<VA,<VB,<VC,<VD,<VE,<VF,<VG,<VH
-VTABLEHI			DB	>VA,>VB,>VC,>VD,>VE,>VF,>VG,>VH
+;;VTABLELO			DB	<VA,<VB,<VC,<VD,<VE,<VF,<VG,<VH
+;;VTABLEHI			DB	>VA,>VB,>VC,>VD,>VE,>VF,>VG,>VH
 
 
 												
 ;    create a 64-entry message schedule array w[0..63] of 32-bit words
 ;    (The initial values in w[0..63] don't matter, so many implementations zero them here)
 
+	DS \
+	DS 64
 W00					DS 4
 W01					DS 4
 W02					DS 4
@@ -1994,21 +2292,21 @@ W63					DS 4
 ;					DA	W50,W51,W52,W53,W54,W55,W56,W57,W58,W59
 ;					DA	W60,W61,W62,W63
 
-WTABLELO		DB	<W00,<W01,<W02,<W03,<W04,<W05,<W06,<W07,<W08,<W09
-				DB	<W10,<W11,<W12,<W13,<W14,<W15,<W16,<W17,<W18,<W19
-				DB	<W20,<W21,<W22,<W23,<W24,<W25,<W26,<W27,<W28,<W29
-				DB	<W30,<W31,<W32,<W33,<W34,<W35,<W36,<W37,<W38,<W39
-				DB	<W40,<W41,<W42,<W43,<W44,<W45,<W46,<W47,<W48,<W49
-				DB	<W50,<W51,<W52,<W53,<W54,<W55,<W56,<W57,<W58,<W59
-				DB	<W60,<W61,<W62,<W63
+;;WTABLELO		DB	<W00,<W01,<W02,<W03,<W04,<W05,<W06,<W07,<W08,<W09
+;;				DB	<W10,<W11,<W12,<W13,<W14,<W15,<W16,<W17,<W18,<W19
+;;				DB	<W20,<W21,<W22,<W23,<W24,<W25,<W26,<W27,<W28,<W29
+;;				DB	<W30,<W31,<W32,<W33,<W34,<W35,<W36,<W37,<W38,<W39
+;;				DB	<W40,<W41,<W42,<W43,<W44,<W45,<W46,<W47,<W48,<W49
+;;				DB	<W50,<W51,<W52,<W53,<W54,<W55,<W56,<W57,<W58,<W59
+;;				DB	<W60,<W61,<W62,<W63
 
-WTABLEHI		DB	>W00,>W01,>W02,>W03,>W04,>W05,>W06,>W07,>W08,>W09
-				DB	>W10,>W11,>W12,>W13,>W14,>W15,>W16,>W17,>W18,>W19
-				DB	>W20,>W21,>W22,>W23,>W24,>W25,>W26,>W27,>W28,>W29
-				DB	>W30,>W31,>W32,>W33,>W34,>W35,>W36,>W37,>W38,>W39
-				DB	>W40,>W41,>W42,>W43,>W44,>W45,>W46,>W47,>W48,>W49
-				DB	>W50,>W51,>W52,>W53,>W54,>W55,>W56,>W57,>W58,>W59
-				DB	>W60,>W61,>W62,>W63
+;;WTABLEHI		DB	>W00,>W01,>W02,>W03,>W04,>W05,>W06,>W07,>W08,>W09
+;;				DB	>W10,>W11,>W12,>W13,>W14,>W15,>W16,>W17,>W18,>W19
+;;				DB	>W20,>W21,>W22,>W23,>W24,>W25,>W26,>W27,>W28,>W29
+;;				DB	>W30,>W31,>W32,>W33,>W34,>W35,>W36,>W37,>W38,>W39
+;;				DB	>W40,>W41,>W42,>W43,>W44,>W45,>W46,>W47,>W48,>W49
+;;				DB	>W50,>W51,>W52,>W53,>W54,>W55,>W56,>W57,>W58,>W59
+;;				DB	>W60,>W61,>W62,>W63
 
 
 ;	Initialize hash values:
@@ -2035,18 +2333,19 @@ H06				HEX	1f,83,d9,ab
 H07				HEX	5b,e0,cd,19
 
 ;	HTABLE			DA	H00,H01,H02,H03,H04,H05,H06,H07
-HTABLELO		DB	<H00,<H01,<H02,<H03,<H04,<H05,<H06,<H07
-HTABLEHI		DB	>H00,>H01,>H02,>H03,>H04,>H05,>H06,>H07
+;;HTABLELO		DB	<H00,<H01,<H02,<H03,<H04,<H05,<H06,<H07
+;;HTABLEHI		DB	>H00,>H01,>H02,>H03,>H04,>H05,>H06,>H07
 
 
 ;	STABLE				DA	S0,S1
-STABLELO			DB	<S0,<S1
-STABLEHI			DB	>S0,>S1
+;;STABLELO			DB	<S0,<S1
+;;STABLEHI			DB	>S0,>S1
 
 
 ;	Initialize array of round constants:
 ;	(first 32 bits of the fractional parts of the cube roots of the first 64 primes 2..311):
 
+	DS \
 K00				HEX	42,8a,2f,98
 K01				HEX	71,37,44,91
 K02				HEX	b5,c0,fb,cf
@@ -2120,21 +2419,21 @@ K63				HEX	c6,71,78,f2
 ;					DA	K50,K51,K52,K53,K54,K55,K56,K57,K58,K59
 ;					DA	K60,K61,K62,K63
 
-KTABLELO		DB	<K00,<K01,<K02,<K03,<K04,<K05,<K06,<K07,<K08,<K09
-				DB	<K10,<K11,<K12,<K13,<K14,<K15,<K16,<K17,<K18,<K19
-				DB	<K20,<K21,<K22,<K23,<K24,<K25,<K26,<K27,<K28,<K29
-				DB	<K30,<K31,<K32,<K33,<K34,<K35,<K36,<K37,<K38,<K39
-				DB	<K40,<K41,<K42,<K43,<K44,<K45,<K46,<K47,<K48,<K49
-				DB	<K50,<K51,<K52,<K53,<K54,<K55,<K56,<K57,<K58,<K59
-				DB	<K60,<K61,<K62,<K63
+;;KTABLELO		DB	<K00,<K01,<K02,<K03,<K04,<K05,<K06,<K07,<K08,<K09
+;;				DB	<K10,<K11,<K12,<K13,<K14,<K15,<K16,<K17,<K18,<K19
+;;				DB	<K20,<K21,<K22,<K23,<K24,<K25,<K26,<K27,<K28,<K29
+;;				DB	<K30,<K31,<K32,<K33,<K34,<K35,<K36,<K37,<K38,<K39
+;;				DB	<K40,<K41,<K42,<K43,<K44,<K45,<K46,<K47,<K48,<K49
+;;				DB	<K50,<K51,<K52,<K53,<K54,<K55,<K56,<K57,<K58,<K59
+;;				DB	<K60,<K61,<K62,<K63
 
-KTABLEHI		DB	>K00,>K01,>K02,>K03,>K04,>K05,>K06,>K07,>K08,>K09
-				DB	>K10,>K11,>K12,>K13,>K14,>K15,>K16,>K17,>K18,>K19
-				DB	>K20,>K21,>K22,>K23,>K24,>K25,>K26,>K27,>K28,>K29
-				DB	>K30,>K31,>K32,>K33,>K34,>K35,>K36,>K37,>K38,>K39
-				DB	>K40,>K41,>K42,>K43,>K44,>K45,>K46,>K47,>K48,>K49
-				DB	>K50,>K51,>K52,>K53,>K54,>K55,>K56,>K57,>K58,>K59
-				DB	>K60,>K61,>K62,>K63
+;;KTABLEHI		DB	>K00,>K01,>K02,>K03,>K04,>K05,>K06,>K07,>K08,>K09
+;;				DB	>K10,>K11,>K12,>K13,>K14,>K15,>K16,>K17,>K18,>K19
+;;				DB	>K20,>K21,>K22,>K23,>K24,>K25,>K26,>K27,>K28,>K29
+;;				DB	>K30,>K31,>K32,>K33,>K34,>K35,>K36,>K37,>K38,>K39
+;;				DB	>K40,>K41,>K42,>K43,>K44,>K45,>K46,>K47,>K48,>K49
+;;				DB	>K50,>K51,>K52,>K53,>K54,>K55,>K56,>K57,>K58,>K59
+;;				DB	>K60,>K61,>K62,>K63
 				
 
 ; 80 ascii '0'
@@ -2158,7 +2457,39 @@ KTABLEHI		DB	>K00,>K01,>K02,>K03,>K04,>K05,>K06,>K07,>K08,>K09
 ;6FE28C0AB6F1B372C1A6A246AE63F74F931E8365E15A089C68D6190000000000 - boom.
 
 
-HEXTOASCII			ASC "0123456789ABCDEF" 
+	DS \
+HEXTOASCIILO			ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+				ASC "0123456789ABCDEF" 
+HEXTOASCIIHI			ASC "0000000000000000" 
+				ASC "1111111111111111" 
+				ASC "2222222222222222" 
+				ASC "3333333333333333" 
+				ASC "4444444444444444" 
+				ASC "5555555555555555" 
+				ASC "6666666666666666" 
+				ASC "7777777777777777" 
+				ASC "8888888888888888" 
+				ASC "9999999999999999" 
+				ASC "AAAAAAAAAAAAAAAA" 
+				ASC "BBBBBBBBBBBBBBBB" 
+				ASC "CCCCCCCCCCCCCCCC" 
+				ASC "DDDDDDDDDDDDDDDD" 
+				ASC "EEEEEEEEEEEEEEEE" 
+				ASC "FFFFFFFFFFFFFFFF" 
 
 SPLASHLO			db	<SPLASHSCREENDATA
 SPLASHHI			db	>SPLASHSCREENDATA
